@@ -1,0 +1,182 @@
+"""
+Command-line interface entry point for CCSDS Telecommand Diagnostic Client.
+"""
+
+import argparse
+import binascii
+import sys
+import unittest
+
+from ccsds.cli.formatter import print_frame_inspection
+from ccsds.exceptions import TransmissionError, ValidationError
+from ccsds.models.space_packet import SpacePacket
+from ccsds.models.tc_frame import TCTransferFrame
+from ccsds.transport.client import send_payload
+from ccsds.transport.session import StatefulSession
+
+
+def parse_arguments(args=None):
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="CCSDS Telecommand Diagnostic Client & Frame Builder"
+    )
+
+    parser.add_argument("-t", "--target", help="Target IP or hostname")
+    parser.add_argument("-p", "--port", type=int, help="Target port")
+    parser.add_argument("--proto", choices=["tcp", "udp"], default="udp", help="Transport protocol (default: udp)")
+    parser.add_argument("--timeout", type=float, default=3.0, help="Socket timeout in seconds (default: 3.0)")
+    parser.add_argument("--recv", action="store_true", help="Listen for UDP response after transmission")
+
+    # Spacecraft & Channel IDs
+    parser.add_argument("--scid", type=int, default=0, help="Spacecraft Identifier (10-bit: 0-1023), default: 0")
+    parser.add_argument("--vcid", type=int, default=0, help="Virtual Channel Identifier (6-bit: 0-63), default: 0")
+    parser.add_argument("--apid", type=int, default=1, help="Application Process Identifier (11-bit: 0-2047), default: 1")
+
+    # CCSDS Header Flags
+    parser.add_argument("--bypass", type=int, choices=[0, 1], default=1, help="COP-1 Bypass Flag: 1=Expedited (default), 0=Sequence-Controlled")
+    parser.add_argument("--seq-num", type=int, default=0, help="TC Frame Sequence Number N(S) (0-255), default: 0")
+    parser.add_argument("--seq-flags", type=int, choices=[0, 1, 2, 3], default=3, help="Space Packet Sequence Flags (0=Cont, 1=First, 2=Last, 3=Unsegmented)")
+    parser.add_argument("--sec-header", type=int, choices=[0, 1], default=0, help="Secondary Header Flag (0=None, 1=Present)")
+
+    # Payload options
+    parser.add_argument("--hex", action="store_true", help="Parse payload string as hex instead of raw ASCII")
+    parser.add_argument("-f", "--file", help="Path to file containing payload data")
+    parser.add_argument("payload", nargs="?", help="The payload string (ASCII or Hex)")
+
+    # Execution modes
+    parser.add_argument("--dry-run", action="store_true", help="Inspect packet structure without transmitting")
+    parser.add_argument("--test", action="store_true", help="Run internal unit test suite")
+
+    # Stateful Sequence Automation Options
+    parser.add_argument("--auto-sequence", action="store_true", help="Run automated stateful sequence (sync -> counter ACK -> next command)")
+    parser.add_argument("--start-counter", type=int, default=0, help="Initial packet sequence counter (0-255), default: 0")
+    parser.add_argument("--sync-payload", default="BEGIN", help="Initial sync payload string (default: BEGIN)")
+    parser.add_argument("--next-payload", default="GETFLAG", help="Follow-up payload string after ACK (default: GETFLAG)")
+    parser.add_argument("--payload-format", choices=["auto", "binary_colon", "binary_raw", "hex_text", "dec_text"], default="auto", help="Payload counter formatting mode (default: auto)")
+
+    return parser.parse_args(args)
+
+
+def run_tests():
+    """Runs test suite when invoked via --test flag."""
+    print("[*] Running CCSDS Engine Unit Tests...")
+    loader = unittest.TestLoader()
+    suite = loader.discover("tests")
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(suite)
+    sys.exit(0 if result.wasSuccessful() else 1)
+
+
+def main(cli_args=None):
+    """Main CLI execution routine."""
+    args = parse_arguments(cli_args)
+
+    if args.test:
+        run_tests()
+
+    if args.auto_sequence:
+        if not args.target or not args.port:
+            print("[-] Error: --target and --port are required for --auto-sequence.")
+            sys.exit(1)
+
+        sync_bytes = binascii.unhexlify(args.sync_payload) if args.hex else args.sync_payload.encode('utf-8')
+        next_bytes = binascii.unhexlify(args.next_payload) if args.hex else args.next_payload.encode('utf-8')
+
+        print(f"[*] Starting Stateful Sequence Automation over {args.proto.upper()} to {args.target}:{args.port}...")
+        print(f"[*] Config: SCID={args.scid}, VCID={args.vcid}, APID={args.apid}, Bypass={args.bypass}, PayloadFormat={args.payload_format}")
+
+        with StatefulSession(
+            target_host=args.target,
+            target_port=args.port,
+            protocol=args.proto,
+            scid=args.scid,
+            vcid=args.vcid,
+            apid=args.apid,
+            bypass=args.bypass,
+            seq_num=args.seq_num,
+            timeout=args.timeout
+        ) as session:
+            try:
+                session.run_sequence(
+                    start_counter=args.start_counter,
+                    sync_payload=sync_bytes,
+                    next_payload=next_bytes,
+                    fmt_style=args.payload_format
+                )
+                print("\n[+] Sequence Automation Completed Successfully!")
+                sys.exit(0)
+            except Exception as e:
+                print(f"[-] Sequence execution failed: {e}")
+                sys.exit(1)
+
+    # Process payload input
+    if args.file:
+        try:
+            with open(args.file, "rb") as f:
+                user_data = f.read()
+        except OSError as e:
+            print(f"[-] Error reading file '{args.file}': {e}")
+            sys.exit(1)
+    elif args.payload:
+        try:
+            if args.hex:
+                user_data = binascii.unhexlify(args.payload.replace(" ", ""))
+            else:
+                user_data = args.payload.encode('utf-8')
+        except binascii.Error as e:
+            print(f"[-] Error: Payload is not valid hexadecimal: {e}")
+            sys.exit(1)
+    else:
+        print("[-] Error: A payload string or --file input is required (unless running --test or --auto-sequence).")
+        sys.exit(1)
+
+    # Build Space Packet & TC Transfer Frame
+    try:
+        sp = SpacePacket(
+            apid=args.apid,
+            payload=user_data,
+            sec_header_flag=args.sec_header,
+            seq_flags=args.seq_flags
+        )
+        sp_bytes = sp.pack()
+
+        tc = TCTransferFrame(
+            scid=args.scid,
+            vcid=args.vcid,
+            payload=sp_bytes,
+            bypass=args.bypass,
+            seq_num=args.seq_num
+        )
+        tc_bytes = tc.pack()
+    except (ValueError, ValidationError) as e:
+        print(f"[-] Encoding error: {e}")
+        sys.exit(1)
+
+    # Display inspection report
+    print_frame_inspection(sp, tc, tc_bytes)
+
+    if args.dry_run:
+        print("[*] Dry-run mode enabled. Skipping transmission.")
+        return
+
+    # Validate target network settings
+    if not args.target or not args.port:
+        print("[-] Error: --target and --port are required for transmission (or use --dry-run).")
+        sys.exit(1)
+
+    print(f"[*] Transmitting over {args.proto.upper()} to {args.target}:{args.port}...")
+    try:
+        send_payload(
+            target_host=args.target,
+            target_port=args.port,
+            protocol=args.proto,
+            data=tc_bytes,
+            timeout=args.timeout,
+            listen_response=args.recv
+        )
+    except TransmissionError:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "satelites-ccsds"
+version = "1.0.0"
+description = "CCSDS Telecommand & Telemetry Processing Engine and Diagnostic Utility"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Satellite Systems Team" }
+]
+keywords = [
+    "ccsds",
+    "telecommand",
+    "telemetry",
+    "space-packet",
+    "tc-transfer-frame",
+    "tm-transfer-frame",
+    "spacecraft",
+    "aerospace"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Communications",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/morganbarber/satelites"
+Repository = "https://github.com/morganbarber/satelites.git"
+
+[project.scripts]
+ccsds = "ccsds.cli.main:main"
+satelites = "ccsds.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["ccsds*"]
+
+[tool.setuptools.package-data]
+ccsds = ["py.typed"]
