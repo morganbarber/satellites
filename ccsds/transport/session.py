@@ -35,6 +35,7 @@ class StatefulSession:
         self.pkt_seq_count = 0
 
     def connect(self):
+        """Establishes network socket connection and flushes TCP banners if present."""
         sock_type = socket.SOCK_DGRAM if self.protocol == "udp" else socket.SOCK_STREAM
         self.socket = socket.socket(socket.AF_INET, sock_type)
         self.socket.settimeout(self.timeout)
@@ -53,17 +54,19 @@ class StatefulSession:
                     except (socket.timeout, BlockingIOError):
                         break
                 if banner_data:
-                    print(f"[*] Flushed TCP connection banner ({len(banner_data)} bytes): {banner_data.decode('utf-8', errors='ignore').strip()}")
+                    clean_banner = banner_data.decode('utf-8', errors='ignore').strip()
+                    print(f"[*] Flushed TCP connection banner ({len(banner_data)} bytes): {clean_banner}")
             except OSError:
                 pass
             finally:
                 self.socket.settimeout(self.timeout)
 
     def close(self):
+        """Closes active network socket connection if present."""
         if self.socket:
             try:
                 self.socket.close()
-            except Exception:
+            except OSError:
                 pass
             self.socket = None
 
@@ -107,7 +110,7 @@ class StatefulSession:
 
         return resp
 
-    def run_sequence(self, start_counter: int = 0, sync_payload: bytes = b"BEGIN", 
+    def run_sequence(self, start_counter: int = 0, sync_payload: bytes = b"BEGIN",
                      next_payload: bytes = b"GETFLAG", fmt_style: str = "auto") -> dict:
         """
         Executes a 2-step stateful sequence with flexible payload formatting:
@@ -120,15 +123,17 @@ class StatefulSession:
 
         # Step 1: Sync
         p1 = format_counter_payload(start_counter, sync_payload, active_fmt)
-        print(f"[*] [Step 1] Sending Sync Payload (Counter 0x{start_counter:02X}, Format={active_fmt}): {p1.hex().upper()} | Raw: {p1}")
+        print(f"[*] [Step 1] Sending Sync Payload (Counter 0x{start_counter:02X}, Format={active_fmt}): "
+              f"{p1.hex().upper()} | Raw: {p1}")
         resp1_raw = self.send_frame(p1)
         print(f"[+] [Step 1] Received Raw Response ({len(resp1_raw)} bytes): {resp1_raw.hex().upper()}")
 
         resp1_sp = parse_response_payload(resp1_raw)
-        
+
         if resp1_sp.payload:
             rx_counter, rx_data, detected_fmt = extract_counter_from_payload(resp1_sp.payload, start_counter)
-            print(f"[+] [Step 1] Extracted Counter: 0x{rx_counter:02X} ({rx_counter}), Data: {rx_data}, Detected Format: {detected_fmt}")
+            print(f"[+] [Step 1] Extracted Counter: 0x{rx_counter:02X} ({rx_counter}), "
+                  f"Data: {rx_data}, Detected Format: {detected_fmt}")
             if fmt_style == "auto":
                 active_fmt = detected_fmt
             # Next ground counter increments from the spacecraft's returned ACK counter
@@ -141,7 +146,8 @@ class StatefulSession:
 
         # Step 2: Next command
         p2 = format_counter_payload(next_counter, next_payload, active_fmt)
-        print(f"[*] [Step 2] Sending Sequence Payload (Counter 0x{next_counter:02X}, Format={active_fmt}): {p2.hex().upper()} | Raw: {p2}")
+        print(f"[*] [Step 2] Sending Sequence Payload (Counter 0x{next_counter:02X}, Format={active_fmt}): "
+              f"{p2.hex().upper()} | Raw: {p2}")
         resp2_raw = self.send_frame(p2)
         print(f"[+] [Step 2] Received Raw Response ({len(resp2_raw)} bytes): {resp2_raw.hex().upper()}")
 
@@ -156,4 +162,3 @@ class StatefulSession:
             "step2_resp_raw": resp2_raw,
             "step2_resp_payload": resp2_sp.payload if resp2_sp else None
         }
-

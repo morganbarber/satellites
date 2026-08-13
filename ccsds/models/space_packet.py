@@ -24,22 +24,24 @@ class SpacePacket:
         self.validate()
 
     def validate(self):
-        if not (0 <= self.version <= 7):
+        """Validates header fields and payload boundaries."""
+        if not 0 <= self.version <= 7:
             raise ValidationError(f"Version must be 0-7, got {self.version}")
-        if not (0 <= self.packet_type <= 1):
+        if not 0 <= self.packet_type <= 1:
             raise ValidationError(f"Packet type must be 0 or 1, got {self.packet_type}")
-        if not (0 <= self.sec_header_flag <= 1):
+        if not 0 <= self.sec_header_flag <= 1:
             raise ValidationError(f"Secondary header flag must be 0 or 1, got {self.sec_header_flag}")
-        if not (0 <= self.apid <= 0x07FF):
+        if not 0 <= self.apid <= 0x07FF:
             raise ValidationError(f"APID out of 11-bit range (0-2047): {self.apid}")
-        if not (0 <= self.seq_flags <= 3):
+        if not 0 <= self.seq_flags <= 3:
             raise ValidationError(f"Sequence flags must be 0-3, got {self.seq_flags}")
-        if not (0 <= self.seq_count <= 0x3FFF):
+        if not 0 <= self.seq_count <= 0x3FFF:
             raise ValidationError(f"Sequence count out of 14-bit range (0-16383): {self.seq_count}")
         if len(self.payload) > 65536:
             raise ValidationError(f"Payload length ({len(self.payload)}) exceeds max 65536 bytes")
 
     def pack(self) -> bytes:
+        """Packs SpacePacket object into raw binary bytes."""
         word1 = ((self.version & 0x07) << 13) | \
                 ((self.packet_type & 0x01) << 12) | \
                 ((self.sec_header_flag & 0x01) << 11) | \
@@ -53,6 +55,7 @@ class SpacePacket:
 
     @classmethod
     def unpack(cls, data: bytes) -> "SpacePacket":
+        """Unpacks raw binary bytes into a SpacePacket instance."""
         if len(data) < 6:
             raise ValidationError(f"Data length ({len(data)}) too short for Space Packet header (min 6 bytes)")
 

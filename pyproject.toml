@@ -50,3 +50,16 @@ include = ["ccsds*"]
 
 [tool.setuptools.package-data]
 ccsds = ["py.typed"]
+
+[tool.pylint.messages_control]
+disable = [
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "too-many-instance-attributes",
+    "too-many-locals",
+    "duplicate-code",
+]
+
+[tool.pylint.format]
+max-line-length = 120
+

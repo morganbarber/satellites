@@ -28,15 +28,24 @@ def parse_arguments(args=None):
     parser.add_argument("--recv", action="store_true", help="Listen for UDP response after transmission")
 
     # Spacecraft & Channel IDs
-    parser.add_argument("--scid", type=int, default=0, help="Spacecraft Identifier (10-bit: 0-1023), default: 0")
-    parser.add_argument("--vcid", type=int, default=0, help="Virtual Channel Identifier (6-bit: 0-63), default: 0")
-    parser.add_argument("--apid", type=int, default=1, help="Application Process Identifier (11-bit: 0-2047), default: 1")
+    parser.add_argument("--scid", type=int, default=0, help="Spacecraft ID (10-bit: 0-1023), default: 0")
+    parser.add_argument("--vcid", type=int, default=0, help="Virtual Channel ID (6-bit: 0-63), default: 0")
+    parser.add_argument("--apid", type=int, default=1, help="Application Process ID (11-bit: 0-2047), default: 1")
 
     # CCSDS Header Flags
-    parser.add_argument("--bypass", type=int, choices=[0, 1], default=1, help="COP-1 Bypass Flag: 1=Expedited (default), 0=Sequence-Controlled")
+    parser.add_argument(
+        "--bypass", type=int, choices=[0, 1], default=1,
+        help="COP-1 Bypass Flag: 1=Expedited (default), 0=Sequence-Controlled"
+    )
     parser.add_argument("--seq-num", type=int, default=0, help="TC Frame Sequence Number N(S) (0-255), default: 0")
-    parser.add_argument("--seq-flags", type=int, choices=[0, 1, 2, 3], default=3, help="Space Packet Sequence Flags (0=Cont, 1=First, 2=Last, 3=Unsegmented)")
-    parser.add_argument("--sec-header", type=int, choices=[0, 1], default=0, help="Secondary Header Flag (0=None, 1=Present)")
+    parser.add_argument(
+        "--seq-flags", type=int, choices=[0, 1, 2, 3], default=3,
+        help="Space Packet Sequence Flags (0=Cont, 1=First, 2=Last, 3=Unsegmented)"
+    )
+    parser.add_argument(
+        "--sec-header", type=int, choices=[0, 1], default=0,
+        help="Secondary Header Flag (0=None, 1=Present)"
+    )
 
     # Payload options
     parser.add_argument("--hex", action="store_true", help="Parse payload string as hex instead of raw ASCII")
@@ -48,11 +57,20 @@ def parse_arguments(args=None):
     parser.add_argument("--test", action="store_true", help="Run internal unit test suite")
 
     # Stateful Sequence Automation Options
-    parser.add_argument("--auto-sequence", action="store_true", help="Run automated stateful sequence (sync -> counter ACK -> next command)")
-    parser.add_argument("--start-counter", type=int, default=0, help="Initial packet sequence counter (0-255), default: 0")
+    parser.add_argument(
+        "--auto-sequence", action="store_true",
+        help="Run automated stateful sequence (sync -> counter ACK -> next command)"
+    )
+    parser.add_argument("--start-counter", type=int, default=0, help="Initial sequence counter (0-255), default: 0")
     parser.add_argument("--sync-payload", default="BEGIN", help="Initial sync payload string (default: BEGIN)")
-    parser.add_argument("--next-payload", default="GETFLAG", help="Follow-up payload string after ACK (default: GETFLAG)")
-    parser.add_argument("--payload-format", choices=["auto", "binary_colon", "binary_raw", "hex_text", "dec_text"], default="auto", help="Payload counter formatting mode (default: auto)")
+    parser.add_argument(
+        "--next-payload", default="GETFLAG",
+        help="Follow-up payload string after ACK (default: GETFLAG)"
+    )
+    parser.add_argument(
+        "--payload-format", choices=["auto", "binary_colon", "binary_raw", "hex_text", "dec_text"], default="auto",
+        help="Payload counter formatting mode (default: auto)"
+    )
 
     return parser.parse_args(args)
 
@@ -67,6 +85,68 @@ def run_tests():
     sys.exit(0 if result.wasSuccessful() else 1)
 
 
+def execute_auto_sequence(args):
+    """Executes stateful automated telecommand sequence."""
+    if not args.target or not args.port:
+        print("[-] Error: --target and --port are required for --auto-sequence.")
+        sys.exit(1)
+
+    sync_bytes = binascii.unhexlify(args.sync_payload) if args.hex else args.sync_payload.encode('utf-8')
+    next_bytes = binascii.unhexlify(args.next_payload) if args.hex else args.next_payload.encode('utf-8')
+
+    print(f"[*] Starting Stateful Sequence Automation over {args.proto.upper()} to {args.target}:{args.port}...")
+    print(
+        f"[*] Config: SCID={args.scid}, VCID={args.vcid}, APID={args.apid}, "
+        f"Bypass={args.bypass}, PayloadFormat={args.payload_format}"
+    )
+
+    with StatefulSession(
+        target_host=args.target,
+        target_port=args.port,
+        protocol=args.proto,
+        scid=args.scid,
+        vcid=args.vcid,
+        apid=args.apid,
+        bypass=args.bypass,
+        seq_num=args.seq_num,
+        timeout=args.timeout
+    ) as session:
+        try:
+            session.run_sequence(
+                start_counter=args.start_counter,
+                sync_payload=sync_bytes,
+                next_payload=next_bytes,
+                fmt_style=args.payload_format
+            )
+            print("\n[+] Sequence Automation Completed Successfully!")
+            sys.exit(0)
+        except TransmissionError as e:
+            print(f"[-] Sequence execution failed: {e}")
+            sys.exit(1)
+
+
+def extract_user_payload(args) -> bytes:
+    """Extracts raw bytes from file input or positional argument."""
+    if args.file:
+        try:
+            with open(args.file, "rb") as f:
+                return f.read()
+        except OSError as e:
+            print(f"[-] Error reading file '{args.file}': {e}")
+            sys.exit(1)
+    elif args.payload:
+        try:
+            if args.hex:
+                return binascii.unhexlify(args.payload.replace(" ", ""))
+            return args.payload.encode('utf-8')
+        except binascii.Error as e:
+            print(f"[-] Error: Payload is not valid hexadecimal: {e}")
+            sys.exit(1)
+    else:
+        print("[-] Error: A payload string or --file input is required (unless running --test or --auto-sequence).")
+        sys.exit(1)
+
+
 def main(cli_args=None):
     """Main CLI execution routine."""
     args = parse_arguments(cli_args)
@@ -75,60 +155,9 @@ def main(cli_args=None):
         run_tests()
 
     if args.auto_sequence:
-        if not args.target or not args.port:
-            print("[-] Error: --target and --port are required for --auto-sequence.")
-            sys.exit(1)
+        execute_auto_sequence(args)
 
-        sync_bytes = binascii.unhexlify(args.sync_payload) if args.hex else args.sync_payload.encode('utf-8')
-        next_bytes = binascii.unhexlify(args.next_payload) if args.hex else args.next_payload.encode('utf-8')
-
-        print(f"[*] Starting Stateful Sequence Automation over {args.proto.upper()} to {args.target}:{args.port}...")
-        print(f"[*] Config: SCID={args.scid}, VCID={args.vcid}, APID={args.apid}, Bypass={args.bypass}, PayloadFormat={args.payload_format}")
-
-        with StatefulSession(
-            target_host=args.target,
-            target_port=args.port,
-            protocol=args.proto,
-            scid=args.scid,
-            vcid=args.vcid,
-            apid=args.apid,
-            bypass=args.bypass,
-            seq_num=args.seq_num,
-            timeout=args.timeout
-        ) as session:
-            try:
-                session.run_sequence(
-                    start_counter=args.start_counter,
-                    sync_payload=sync_bytes,
-                    next_payload=next_bytes,
-                    fmt_style=args.payload_format
-                )
-                print("\n[+] Sequence Automation Completed Successfully!")
-                sys.exit(0)
-            except Exception as e:
-                print(f"[-] Sequence execution failed: {e}")
-                sys.exit(1)
-
-    # Process payload input
-    if args.file:
-        try:
-            with open(args.file, "rb") as f:
-                user_data = f.read()
-        except OSError as e:
-            print(f"[-] Error reading file '{args.file}': {e}")
-            sys.exit(1)
-    elif args.payload:
-        try:
-            if args.hex:
-                user_data = binascii.unhexlify(args.payload.replace(" ", ""))
-            else:
-                user_data = args.payload.encode('utf-8')
-        except binascii.Error as e:
-            print(f"[-] Error: Payload is not valid hexadecimal: {e}")
-            sys.exit(1)
-    else:
-        print("[-] Error: A payload string or --file input is required (unless running --test or --auto-sequence).")
-        sys.exit(1)
+    user_data = extract_user_payload(args)
 
     # Build Space Packet & TC Transfer Frame
     try:
@@ -176,6 +205,7 @@ def main(cli_args=None):
         )
     except TransmissionError:
         sys.exit(1)
+
 
 
 if __name__ == "__main__":

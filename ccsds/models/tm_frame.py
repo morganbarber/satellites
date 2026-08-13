@@ -32,14 +32,16 @@ class TMTransferFrame:
         self.validate()
 
     def validate(self):
-        if not (0 <= self.tfvn <= 3):
+        """Validates header fields and frame parameters."""
+        if not 0 <= self.tfvn <= 3:
             raise ValidationError(f"TFVN must be 0-3, got {self.tfvn}")
-        if not (0 <= self.scid <= 0x03FF):
+        if not 0 <= self.scid <= 0x03FF:
             raise ValidationError(f"SCID out of 10-bit range (0-1023): {self.scid}")
-        if not (0 <= self.vcid <= 0x07):
+        if not 0 <= self.vcid <= 0x07:
             raise ValidationError(f"VCID out of 3-bit range (0-7): {self.vcid}")
 
     def pack(self) -> bytes:
+        """Packs TM Transfer Frame object into raw binary bytes."""
         word1 = ((self.tfvn & 0x03) << 14) | \
                 ((self.scid & 0x03FF) << 4) | \
                 ((self.vcid & 0x07) << 1) | \
@@ -61,6 +63,8 @@ class TMTransferFrame:
 
     @classmethod
     def unpack(cls, data: bytes, has_fecf: bool = True) -> "TMTransferFrame":
+        """Unpacks raw binary bytes into a TMTransferFrame instance."""
+        min_len = 8 if has_fecf else 6
         min_len = 8 if has_fecf else 6
         if len(data) < min_len:
             raise ValidationError(f"Data length ({len(data)}) too short for TM Transfer Frame (min {min_len} bytes)")

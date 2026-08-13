@@ -28,20 +28,22 @@ class TCTransferFrame:
         self.validate()
 
     def validate(self):
-        if not (0 <= self.tfvn <= 3):
+        """Validates header fields and frame parameters."""
+        if not 0 <= self.tfvn <= 3:
             raise ValidationError(f"TFVN must be 0-3, got {self.tfvn}")
-        if not (0 <= self.bypass <= 1):
+        if not 0 <= self.bypass <= 1:
             raise ValidationError(f"Bypass flag must be 0 or 1, got {self.bypass}")
-        if not (0 <= self.control <= 1):
+        if not 0 <= self.control <= 1:
             raise ValidationError(f"Control flag must be 0 or 1, got {self.control}")
-        if not (0 <= self.scid <= 0x03FF):
+        if not 0 <= self.scid <= 0x03FF:
             raise ValidationError(f"SCID out of 10-bit range (0-1023): {self.scid}")
-        if not (0 <= self.vcid <= 0x3F):
+        if not 0 <= self.vcid <= 0x3F:
             raise ValidationError(f"VCID out of 6-bit range (0-63): {self.vcid}")
-        if not (0 <= self.seq_num <= 0xFF):
+        if not 0 <= self.seq_num <= 0xFF:
             raise ValidationError(f"Sequence number out of 8-bit range (0-255): {self.seq_num}")
 
     def pack(self) -> bytes:
+        """Packs TC Transfer Frame object into raw binary bytes."""
         header_len = 5
         crc_len = 2 if self.has_fecf else 0
         total_frame_length = header_len + len(self.payload) + crc_len
@@ -70,6 +72,7 @@ class TCTransferFrame:
 
     @classmethod
     def unpack(cls, data: bytes, has_fecf: bool = True) -> "TCTransferFrame":
+        """Unpacks raw binary bytes into a TCTransferFrame instance."""
         min_len = 7 if has_fecf else 5
         if len(data) < min_len:
             raise ValidationError(f"Data length ({len(data)}) too short for TC Transfer Frame (min {min_len} bytes)")
@@ -86,8 +89,8 @@ class TCTransferFrame:
         frame_length_field = word2 & 0x03FF
         total_len = frame_length_field + 1
 
-        if len(data) < total_len:
-            raise ValidationError(f"Truncated frame data: expected {total_len} bytes, got {len(data)}")
+        if total_len < min_len or len(data) < total_len:
+            raise ValidationError(f"Invalid frame length: header says {total_len} bytes (got {len(data)})")
 
         seq_num = word3
 
