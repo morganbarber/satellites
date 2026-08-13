@@ -227,6 +227,340 @@ class TCTransferFrame:
 
 
 # ==============================================================================
+# TM Transfer Frame (CCSDS 132.0-B-3)
+# ==============================================================================
+
+@dataclass
+class TMTransferFrame:
+    scid: int
+    vcid: int
+    payload: bytes
+    tfvn: int = 0
+    ocf_flag: int = 0
+    master_frame_count: int = 0
+    vc_frame_count: int = 0
+    sec_header_flag: int = 0
+    synch_flag: int = 0
+    packet_order_flag: int = 0
+    segment_length_id: int = 3
+    first_header_pointer: int = 0
+    has_fecf: bool = True
+
+    def __post_init__(self):
+        self.validate()
+
+    def validate(self):
+        if not (0 <= self.tfvn <= 3):
+            raise ValueError(f"TFVN must be 0-3, got {self.tfvn}")
+        if not (0 <= self.scid <= 0x03FF):
+            raise ValueError(f"SCID out of 10-bit range (0-1023): {self.scid}")
+        if not (0 <= self.vcid <= 0x07):
+            raise ValueError(f"VCID out of 3-bit range (0-7): {self.vcid}")
+
+    def pack(self) -> bytes:
+        word1 = ((self.tfvn & 0x03) << 14) | \
+                ((self.scid & 0x03FF) << 4) | \
+                ((self.vcid & 0x07) << 1) | \
+                (self.ocf_flag & 0x01)
+
+        word4 = ((self.sec_header_flag & 0x01) << 15) | \
+                ((self.synch_flag & 0x01) << 14) | \
+                ((self.packet_order_flag & 0x01) << 13) | \
+                ((self.segment_length_id & 0x03) << 11) | \
+                (self.first_header_pointer & 0x07FF)
+
+        header = struct.pack(">HBBH", word1, self.master_frame_count & 0xFF, self.vc_frame_count & 0xFF, word4)
+        frame_without_crc = header + self.payload
+
+        if self.has_fecf:
+            fecf = calculate_ccsds_crc16(frame_without_crc)
+            return frame_without_crc + struct.pack(">H", fecf)
+        return frame_without_crc
+
+    @classmethod
+    def unpack(cls, data: bytes, has_fecf: bool = True) -> "TMTransferFrame":
+        min_len = 8 if has_fecf else 6
+        if len(data) < min_len:
+            raise ValueError(f"Data length ({len(data)}) too short for TM Transfer Frame (min {min_len} bytes)")
+
+        word1, master_cnt, vc_cnt, word4 = struct.unpack(">HBBH", data[:6])
+
+        tfvn = (word1 >> 14) & 0x03
+        scid = (word1 >> 4) & 0x03FF
+        vcid = (word1 >> 1) & 0x07
+        ocf_flag = word1 & 0x01
+
+        sec_header_flag = (word4 >> 15) & 0x01
+        synch_flag = (word4 >> 14) & 0x01
+        packet_order_flag = (word4 >> 13) & 0x01
+        segment_length_id = (word4 >> 11) & 0x03
+        first_header_pointer = word4 & 0x07FF
+
+        payload_end = len(data) - (2 if has_fecf else 0)
+        payload = data[6:payload_end]
+
+        if has_fecf:
+            received_crc = struct.unpack(">H", data[-2:])[0]
+            computed_crc = calculate_ccsds_crc16(data[:payload_end])
+            if received_crc != computed_crc:
+                raise ValueError(f"TM FECF CRC mismatch! Received: 0x{received_crc:04X}, Computed: 0x{computed_crc:04X}")
+
+        return cls(
+            scid=scid,
+            vcid=vcid,
+            payload=payload,
+            tfvn=tfvn,
+            ocf_flag=ocf_flag,
+            master_frame_count=master_cnt,
+            vc_frame_count=vc_cnt,
+            sec_header_flag=sec_header_flag,
+            synch_flag=synch_flag,
+            packet_order_flag=packet_order_flag,
+            segment_length_id=segment_length_id,
+            first_header_pointer=first_header_pointer,
+            has_fecf=has_fecf
+        )
+
+
+def parse_response_payload(raw_bytes: bytes) -> SpacePacket:
+    """
+    Attempts to unpack raw response bytes as TM Transfer Frame, TC Transfer Frame,
+    or direct Space Packet. Returns extracted SpacePacket.
+    """
+    if not raw_bytes:
+        raise ValueError("Empty response received")
+
+    # 1. Try TM Transfer Frame
+    try:
+        tm_frame = TMTransferFrame.unpack(raw_bytes)
+        return SpacePacket.unpack(tm_frame.payload)
+    except Exception:
+        pass
+
+    # 2. Try TC Transfer Frame
+    try:
+        tc_frame = TCTransferFrame.unpack(raw_bytes)
+        return SpacePacket.unpack(tc_frame.payload)
+    except Exception:
+        pass
+
+    # 3. Try Space Packet directly
+    try:
+        return SpacePacket.unpack(raw_bytes)
+    except Exception:
+        pass
+
+    # 4. Fallback: Wrap raw bytes into diagnostic SpacePacket payload
+    return SpacePacket(apid=0, payload=raw_bytes)
+
+
+import re
+
+def extract_counter_from_payload(payload_bytes: bytes, current_counter: int) -> Tuple[int, bytes, str]:
+    """
+    Extracts the updated counter integer, data portion, and detected format style
+    from a response payload bytes object.
+    
+    Supported formats:
+    - hex_text:     b"0x01:ACK" or b"0x01 ACK" -> counter=1, style="hex_text"
+    - dec_text:     b"1:ACK" or b"1 ACK"       -> counter=1, style="dec_text"
+    - binary_colon: b"\x01:ACK"                -> counter=1, style="binary_colon"
+    - binary_raw:   b"\x01ACK"                 -> counter=1, style="binary_raw"
+    """
+    if not payload_bytes:
+        return ((current_counter + 1) & 0xFF, b"", "binary_colon")
+
+    # Try ASCII text decoding first
+    try:
+        text = payload_bytes.decode('utf-8', errors='ignore').strip()
+        
+        # Match "0x01:ACK" or "0x01 ACK" or "0x01"
+        hex_match = re.search(r'0x([0-9a-fA-F]{1,2})\b(?:[:\s]*(.*))?', text)
+        if hex_match:
+            cnt = int(hex_match.group(1), 16)
+            data = (hex_match.group(2) or "").encode('utf-8')
+            return (cnt & 0xFF, data, "hex_text")
+            
+        # Match "1:ACK" or "1 ACK" or "1" (where decimal integer is at start)
+        dec_match = re.search(r'^(\d{1,3})(?:[:\s]+(.*))?$', text)
+        if dec_match:
+            cnt = int(dec_match.group(1))
+            data = (dec_match.group(2) or "").encode('utf-8')
+            return (cnt & 0xFF, data, "dec_text")
+    except Exception:
+        pass
+
+    # Check binary with colon: byte 0 is counter, byte 1 is ASCII ':' (0x3A)
+    if len(payload_bytes) >= 2 and payload_bytes[1] == 0x3A:
+        cnt = payload_bytes[0]
+        data = payload_bytes[2:]
+        return (cnt & 0xFF, data, "binary_colon")
+
+    # Check binary raw: byte 0 is counter
+    if len(payload_bytes) >= 1:
+        cnt = payload_bytes[0]
+        data = payload_bytes[1:]
+        return (cnt & 0xFF, data, "binary_raw")
+
+    # Fallback if unparseable
+    return ((current_counter + 1) & 0xFF, payload_bytes, "binary_colon")
+
+
+def format_counter_payload(counter: int, command: bytes, fmt_style: str = "binary_colon") -> bytes:
+    """
+    Formats a counter and command payload into byte array matching the specified format style.
+    
+    Styles:
+    - "binary_colon": bytes([counter]) + b":" + command
+    - "binary_raw":   bytes([counter]) + command
+    - "hex_text":     b"0x00:BEGIN" (or b"0x00:" + command)
+    - "dec_text":     b"0:BEGIN" (or b"0:" + command)
+    """
+    cmd_str = command.decode('utf-8', errors='ignore') if isinstance(command, bytes) else str(command)
+    
+    if fmt_style == "binary_colon":
+        return bytes([counter & 0xFF]) + b":" + command
+    elif fmt_style == "binary_raw":
+        return bytes([counter & 0xFF]) + command
+    elif fmt_style == "hex_text":
+        return f"0x{counter & 0xFF:02X}:{cmd_str}".encode('utf-8')
+    elif fmt_style == "dec_text":
+        return f"{counter & 0xFF}:{cmd_str}".encode('utf-8')
+    else:
+        # Default to binary_colon
+        return bytes([counter & 0xFF]) + b":" + command
+
+
+# ==============================================================================
+# Stateful Sequence Manager (TCP / UDP Engine)
+# ==============================================================================
+
+class StatefulSession:
+    """
+    Stateful Engine managing multi-step CCSDS telecommand sequence interactions
+    over persistent TCP or reused UDP socket connections.
+    """
+    def __init__(self, target_host: str, target_port: int, protocol: str = "udp",
+                 scid: int = 0, vcid: int = 0, apid: int = 1,
+                 bypass: int = 0, seq_num: int = 0, timeout: float = 3.0):
+        self.target_host = target_host
+        self.target_port = target_port
+        self.protocol = protocol.lower()
+        self.scid = scid
+        self.vcid = vcid
+        self.apid = apid
+        self.bypass = bypass
+        self.seq_num = seq_num
+        self.timeout = timeout
+        self.socket: Optional[socket.socket] = None
+        self.pkt_seq_count = 0
+
+    def connect(self):
+        sock_type = socket.SOCK_DGRAM if self.protocol == "udp" else socket.SOCK_STREAM
+        self.socket = socket.socket(socket.AF_INET, sock_type)
+        self.socket.settimeout(self.timeout)
+        if self.protocol == "tcp":
+            self.socket.connect((self.target_host, self.target_port))
+
+    def close(self):
+        if self.socket:
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self.socket = None
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def send_frame(self, raw_payload: bytes) -> bytes:
+        """Packs SpacePacket into TCTransferFrame, transmits, and listens for response."""
+        sp = SpacePacket(
+            apid=self.apid,
+            payload=raw_payload,
+            seq_count=self.pkt_seq_count
+        )
+        self.pkt_seq_count = (self.pkt_seq_count + 1) & 0x3FFF
+
+        tc = TCTransferFrame(
+            scid=self.scid,
+            vcid=self.vcid,
+            payload=sp.pack(),
+            bypass=self.bypass,
+            seq_num=self.seq_num
+        )
+        if self.bypass == 0:
+            self.seq_num = (self.seq_num + 1) & 0xFF
+
+        tc_bytes = tc.pack()
+
+        if not self.socket:
+            self.connect()
+
+        if self.protocol == "tcp":
+            self.socket.sendall(tc_bytes)
+            resp = self.socket.recv(4096)
+        else:
+            self.socket.sendto(tc_bytes, (self.target_host, self.target_port))
+            resp, _ = self.socket.recvfrom(4096)
+
+        return resp
+
+    def run_sequence(self, start_counter: int = 0, sync_payload: bytes = b"BEGIN", 
+                     next_payload: bytes = b"GETFLAG", fmt_style: str = "auto") -> dict:
+        """
+        Executes a 2-step stateful sequence with flexible payload formatting:
+        1. Transmits formatted start counter + sync_payload (e.g. 0x00:BEGIN or \x00:BEGIN)
+        2. Unpacks response frame, parses returned counter & format style
+        3. Transmits formatted updated counter + next_payload (e.g. 0x01:GETFLAG or \x01:GETFLAG)
+        4. Unpacks final response frame and returns summary dict
+        """
+        active_fmt = "binary_colon" if fmt_style in ("auto", "") else fmt_style
+
+        # Step 1: Sync
+        p1 = format_counter_payload(start_counter, sync_payload, active_fmt)
+        print(f"[*] [Step 1] Sending Sync Payload (Counter 0x{start_counter:02X}, Format={active_fmt}): {p1.hex().upper()} | Raw: {p1}")
+        resp1_raw = self.send_frame(p1)
+        print(f"[+] [Step 1] Received Raw Response ({len(resp1_raw)} bytes): {resp1_raw.hex().upper()}")
+
+        resp1_sp = parse_response_payload(resp1_raw)
+        
+        if resp1_sp.payload:
+            rx_counter, rx_data, detected_fmt = extract_counter_from_payload(resp1_sp.payload, start_counter)
+            print(f"[+] [Step 1] Extracted Counter: 0x{rx_counter:02X} ({rx_counter}), Data: {rx_data}, Detected Format: {detected_fmt}")
+            if fmt_style == "auto":
+                active_fmt = detected_fmt
+        else:
+            rx_counter = (start_counter + 1) & 0xFF
+            rx_data = b""
+            print(f"[!] [Step 1] Response payload empty, auto-incrementing counter to 0x{rx_counter:02X}")
+
+        # Step 2: Next command
+        p2 = format_counter_payload(rx_counter, next_payload, active_fmt)
+        print(f"[*] [Step 2] Sending Sequence Payload (Counter 0x{rx_counter:02X}, Format={active_fmt}): {p2.hex().upper()} | Raw: {p2}")
+        resp2_raw = self.send_frame(p2)
+        print(f"[+] [Step 2] Received Raw Response ({len(resp2_raw)} bytes): {resp2_raw.hex().upper()}")
+
+        resp2_sp = parse_response_payload(resp2_raw)
+        print(f"[+] [Step 2] Unpacked Final Payload: {resp2_sp.payload.hex().upper()} | Raw: {resp2_sp.payload}")
+
+        return {
+            "step1_sent": p1,
+            "step1_resp_counter": rx_counter,
+            "step1_resp_data": rx_data,
+            "step2_sent": p2,
+            "step2_resp_raw": resp2_raw,
+            "step2_resp_payload": resp2_sp.payload if resp2_sp else None
+        }
+
+
+
+
+# ==============================================================================
 # Network Transmission Engine
 # ==============================================================================
 
@@ -336,6 +670,13 @@ def parse_arguments():
     parser.add_argument("--dry-run", action="store_true", help="Inspect packet structure without transmitting")
     parser.add_argument("--test", action="store_true", help="Run internal unit test suite")
 
+    # Stateful Sequence Automation Options
+    parser.add_argument("--auto-sequence", action="store_true", help="Run automated stateful sequence (sync -> counter ACK -> next command)")
+    parser.add_argument("--start-counter", type=int, default=0, help="Initial packet sequence counter (0-255), default: 0")
+    parser.add_argument("--sync-payload", default="BEGIN", help="Initial sync payload string (default: BEGIN)")
+    parser.add_argument("--next-payload", default="GETFLAG", help="Follow-up payload string after ACK (default: GETFLAG)")
+    parser.add_argument("--payload-format", choices=["auto", "binary_colon", "binary_raw", "hex_text", "dec_text"], default="auto", help="Payload counter formatting mode (default: auto)")
+
     return parser.parse_args()
 
 
@@ -373,6 +714,17 @@ class TestCCSDSEngine(unittest.TestCase):
         self.assertEqual(unpacked.seq_num, 77)
         self.assertEqual(unpacked.payload, payload)
 
+    def test_tm_transfer_frame_pack_unpack(self):
+        payload = b"TELEMETRY_DATA"
+        tm = TMTransferFrame(scid=12, vcid=4, payload=payload, master_frame_count=10, vc_frame_count=2)
+        packed = tm.pack()
+        unpacked = TMTransferFrame.unpack(packed)
+        self.assertEqual(unpacked.scid, 12)
+        self.assertEqual(unpacked.vcid, 4)
+        self.assertEqual(unpacked.master_frame_count, 10)
+        self.assertEqual(unpacked.vc_frame_count, 2)
+        self.assertEqual(unpacked.payload, payload)
+
     def test_tc_crc_failure(self):
         payload = b"TEST"
         tc = TCTransferFrame(scid=1, vcid=1, payload=payload)
@@ -387,6 +739,69 @@ class TestCCSDSEngine(unittest.TestCase):
             SpacePacket(apid=3000, payload=b"")
         with self.assertRaises(ValueError):
             TCTransferFrame(scid=2000, vcid=1, payload=b"")
+
+    def test_extract_counter_and_formatting(self):
+        cnt1, data1, fmt1 = extract_counter_from_payload(b"0x01:ACK", 0)
+        self.assertEqual(cnt1, 1)
+        self.assertEqual(fmt1, "hex_text")
+        self.assertEqual(format_counter_payload(1, b"GETFLAG", fmt1), b"0x01:GETFLAG")
+
+        cnt2, data2, fmt2 = extract_counter_from_payload(b"2:ACK", 1)
+        self.assertEqual(cnt2, 2)
+        self.assertEqual(fmt2, "dec_text")
+        self.assertEqual(format_counter_payload(2, b"GETFLAG", fmt2), b"2:GETFLAG")
+
+        cnt3, data3, fmt3 = extract_counter_from_payload(b"\x03:ACK", 2)
+        self.assertEqual(cnt3, 3)
+        self.assertEqual(fmt3, "binary_colon")
+        self.assertEqual(format_counter_payload(3, b"GETFLAG", fmt3), b"\x03:GETFLAG")
+
+    def test_stateful_session_sequence_udp(self):
+        import threading
+        
+        def mock_server(sock):
+            sock.settimeout(2.0)
+            try:
+                # Step 1
+                data, addr = sock.recvfrom(4096)
+                tc_frame = TCTransferFrame.unpack(data)
+                sp = SpacePacket.unpack(tc_frame.payload)
+                
+                # Server responds with "0x01:ACK"
+                ack_sp = SpacePacket(apid=sp.apid, payload=b"0x01:ACK")
+                tm_frame = TMTransferFrame(scid=tc_frame.scid, vcid=tc_frame.vcid, payload=ack_sp.pack())
+                sock.sendto(tm_frame.pack(), addr)
+                
+                # Step 2
+                data2, addr2 = sock.recvfrom(4096)
+                tc_frame2 = TCTransferFrame.unpack(data2)
+                sp2 = SpacePacket.unpack(tc_frame2.payload)
+                
+                # Server verifies that step 2 sent "0x01:GETFLAG"
+                if sp2.payload == b"0x01:GETFLAG":
+                    flag_sp = SpacePacket(apid=sp2.apid, payload=b"0x02:FLAG{VALIDATED_STATE}")
+                else:
+                    flag_sp = SpacePacket(apid=sp2.apid, payload=b"INVALID_SEQUENCE_STATE")
+                
+                tm_frame2 = TMTransferFrame(scid=tc_frame2.scid, vcid=tc_frame2.vcid, payload=flag_sp.pack())
+                sock.sendto(tm_frame2.pack(), addr2)
+            except Exception as e:
+                pass
+
+        srv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        srv_sock.bind(("127.0.0.1", 0))
+        port = srv_sock.getsockname()[1]
+        
+        t = threading.Thread(target=mock_server, args=(srv_sock,))
+        t.start()
+
+        with StatefulSession("127.0.0.1", port, protocol="udp", scid=12, vcid=4, apid=83, bypass=0) as session:
+            result = session.run_sequence(start_counter=0, sync_payload=b"BEGIN", next_payload=b"GETFLAG", fmt_style="auto")
+            self.assertEqual(result["step1_resp_counter"], 1)
+            self.assertEqual(result["step2_resp_payload"], b"0x02:FLAG{VALIDATED_STATE}")
+
+        srv_sock.close()
+        t.join()
 
 
 def run_tests():
@@ -407,6 +822,41 @@ def main():
     if args.test:
         run_tests()
 
+    if args.auto_sequence:
+        if not args.target or not args.port:
+            print("[-] Error: --target and --port are required for --auto-sequence.")
+            sys.exit(1)
+
+        sync_bytes = binascii.unhexlify(args.sync_payload) if args.hex else args.sync_payload.encode('utf-8')
+        next_bytes = binascii.unhexlify(args.next_payload) if args.hex else args.next_payload.encode('utf-8')
+
+        print(f"[*] Starting Stateful Sequence Automation over {args.proto.upper()} to {args.target}:{args.port}...")
+        print(f"[*] Config: SCID={args.scid}, VCID={args.vcid}, APID={args.apid}, Bypass={args.bypass}, PayloadFormat={args.payload_format}")
+
+        with StatefulSession(
+            target_host=args.target,
+            target_port=args.port,
+            protocol=args.proto,
+            scid=args.scid,
+            vcid=args.vcid,
+            apid=args.apid,
+            bypass=args.bypass,
+            seq_num=args.seq_num,
+            timeout=args.timeout
+        ) as session:
+            try:
+                res = session.run_sequence(
+                    start_counter=args.start_counter,
+                    sync_payload=sync_bytes,
+                    next_payload=next_bytes,
+                    fmt_style=args.payload_format
+                )
+                print("\n[+] Sequence Automation Completed Successfully!")
+                sys.exit(0)
+            except Exception as e:
+                print(f"[-] Sequence execution failed: {e}")
+                sys.exit(1)
+
     # Process payload input
     if args.file:
         try:
@@ -425,7 +875,7 @@ def main():
             print(f"[-] Error: Payload is not valid hexadecimal: {e}")
             sys.exit(1)
     else:
-        print("[-] Error: A payload string or --file input is required (unless running --test).")
+        print("[-] Error: A payload string or --file input is required (unless running --test or --auto-sequence).")
         sys.exit(1)
 
     # Build Space Packet & TC Transfer Frame
