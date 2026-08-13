@@ -3,6 +3,7 @@ Transport and session layer utilities.
 """
 
 from ccsds.transport.client import send_payload
+from ccsds.transport.console import PersistentConsole
 from ccsds.transport.payload import (
     extract_counter_from_payload,
     format_counter_payload,
@@ -16,4 +17,6 @@ __all__ = [
     "format_counter_payload",
     "parse_response_payload",
     "StatefulSession",
+    "PersistentConsole",
 ]
+

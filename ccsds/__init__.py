@@ -15,7 +15,7 @@ from ccsds.exceptions import (
     ValidationError,
 )
 from ccsds.models import SpacePacket, TCTransferFrame, TMTransferFrame
-from ccsds.transport import StatefulSession, send_payload
+from ccsds.transport import PersistentConsole, StatefulSession, send_payload
 
 __version__ = "1.0.0"
 
@@ -31,4 +31,5 @@ __all__ = [
     "TMTransferFrame",
     "send_payload",
     "StatefulSession",
+    "PersistentConsole",
 ]

@@ -12,6 +12,7 @@ from ccsds.exceptions import TransmissionError, ValidationError
 from ccsds.models.space_packet import SpacePacket
 from ccsds.models.tc_frame import TCTransferFrame
 from ccsds.transport.client import send_payload
+from ccsds.transport.console import PersistentConsole
 from ccsds.transport.session import StatefulSession
 
 
@@ -72,6 +73,15 @@ def parse_arguments(args=None):
         help="Payload counter formatting mode (default: auto)"
     )
 
+    # Console / U-Boot Interaction Options
+    parser.add_argument("--console", action="store_true", help="Run interactive/command persistent console session")
+    parser.add_argument("--console-type", choices=["tcp", "serial"], default="tcp", help="Console connection type (default: tcp)")
+    parser.add_argument("--console-cmd", help="Command string to send to interactive console")
+    parser.add_argument("--serial-port", help="Serial port device path (e.g. /dev/ttyUSB0)")
+    parser.add_argument("--baudrate", type=int, default=115200, help="Serial baudrate (default: 115200)")
+    parser.add_argument("--prompt", default="=>", help="Target prompt string for console (default: =>)")
+    parser.add_argument("--interrupt-boot", action="store_true", help="Interrupt boot countdown before console command execution")
+
     return parser.parse_args(args)
 
 
@@ -83,6 +93,49 @@ def run_tests():
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
     sys.exit(0 if result.wasSuccessful() else 1)
+
+
+def execute_console(args):
+    """Executes persistent console command / boot interruption routine."""
+    if args.console_type == "tcp" and (not args.target or not args.port):
+        print("[-] Error: --target and --port are required for TCP console connection.")
+        sys.exit(1)
+    if args.console_type == "serial" and not args.serial_port:
+        print("[-] Error: --serial-port is required for Serial console connection.")
+        sys.exit(1)
+
+    print(f"[*] Connecting to {args.console_type.upper()} console...")
+    try:
+        console = PersistentConsole(
+            target_host=args.target or "127.0.0.1",
+            target_port=args.port or 23,
+            serial_port=args.serial_port,
+            baudrate=args.baudrate,
+            connection_type=args.console_type,
+            default_timeout=args.timeout
+        )
+        with console:
+            if args.interrupt_boot:
+                print(f"[*] Interrupting boot countdown (waiting for prompt '{args.prompt}')...")
+                interrupted = console.interrupt_boot(prompt=args.prompt, timeout=args.timeout)
+                if interrupted:
+                    print(f"[+] Boot interrupted! Target prompt '{args.prompt}' detected.")
+                else:
+                    print(f"[!] Prompt '{args.prompt}' not detected during boot interrupt attempt.")
+
+            if args.console_cmd:
+                print(f"[*] Sending command to console: {args.console_cmd}")
+                output = console.send_command(args.console_cmd, prompt=args.prompt, timeout=args.timeout)
+                print(f"[+] Console Command Output:\n{output}")
+            elif not args.interrupt_boot:
+                flushed = console.flush_input()
+                print(f"[+] Console session established. Initial output:\n{flushed.decode('utf-8', errors='ignore')}")
+
+        sys.exit(0)
+    except TransmissionError as e:
+        print(f"[-] Console operation failed: {e}")
+        sys.exit(1)
+
 
 
 def execute_auto_sequence(args):
@@ -143,7 +196,7 @@ def extract_user_payload(args) -> bytes:
             print(f"[-] Error: Payload is not valid hexadecimal: {e}")
             sys.exit(1)
     else:
-        print("[-] Error: A payload string or --file input is required (unless running --test or --auto-sequence).")
+        print("[-] Error: A payload string or --file input is required (unless running --test, --auto-sequence, or --console).")
         sys.exit(1)
 
 
@@ -153,6 +206,9 @@ def main(cli_args=None):
 
     if args.test:
         run_tests()
+
+    if args.console:
+        execute_console(args)
 
     if args.auto_sequence:
         execute_auto_sequence(args)
