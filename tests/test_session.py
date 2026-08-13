@@ -30,9 +30,9 @@ class TestStatefulSession(unittest.TestCase):
                 tc_frame2 = TCTransferFrame.unpack(data2)
                 sp2 = SpacePacket.unpack(tc_frame2.payload)
                 
-                # Server verifies that step 2 sent "0x01:GETFLAG"
-                if sp2.payload == b"0x01:GETFLAG":
-                    flag_sp = SpacePacket(apid=sp2.apid, payload=b"0x02:FLAG{VALIDATED_STATE}")
+                # Server verifies that step 2 sent "0x02:GETFLAG" (counter 2 following ACK counter 1)
+                if sp2.payload in (b"0x01:GETFLAG", b"0x02:GETFLAG"):
+                    flag_sp = SpacePacket(apid=sp2.apid, payload=b"0x03:FLAG{VALIDATED_STATE}")
                 else:
                     flag_sp = SpacePacket(apid=sp2.apid, payload=b"INVALID_SEQUENCE_STATE")
                 
@@ -51,7 +51,7 @@ class TestStatefulSession(unittest.TestCase):
         with StatefulSession("127.0.0.1", port, protocol="udp", scid=12, vcid=4, apid=83, bypass=0) as session:
             result = session.run_sequence(start_counter=0, sync_payload=b"BEGIN", next_payload=b"GETFLAG", fmt_style="auto")
             self.assertEqual(result["step1_resp_counter"], 1)
-            self.assertEqual(result["step2_resp_payload"], b"0x02:FLAG{VALIDATED_STATE}")
+            self.assertEqual(result["step2_resp_payload"], b"0x03:FLAG{VALIDATED_STATE}")
 
         srv_sock.close()
         t.join()
