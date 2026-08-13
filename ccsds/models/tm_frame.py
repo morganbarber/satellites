@@ -65,7 +65,6 @@ class TMTransferFrame:
     def unpack(cls, data: bytes, has_fecf: bool = True) -> "TMTransferFrame":
         """Unpacks raw binary bytes into a TMTransferFrame instance."""
         min_len = 8 if has_fecf else 6
-        min_len = 8 if has_fecf else 6
         if len(data) < min_len:
             raise ValidationError(f"Data length ({len(data)}) too short for TM Transfer Frame (min {min_len} bytes)")
 
