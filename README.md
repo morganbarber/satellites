@@ -4,9 +4,7 @@ A Python library and CLI tool for processing CCSDS Telecommand (TC) and Telemetr
 
 ## Installation
 
-```bash
-pip install satelites-ccsds
-```
+clone the repo
 
 ## Usage
 
