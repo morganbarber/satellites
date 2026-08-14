@@ -21,16 +21,17 @@ def print_frame_inspection(sp: SpacePacket, tc: TCTransferFrame, tc_bytes: bytes
     print(f"  ├─ Seq Counter    : {sp.seq_count}")
     print(f"  └─ Payload Size   : {len(sp.payload)} bytes")
 
-    print("\n[2] TC Transfer Frame Header (CCSDS 232.0-B-3)")
-    print(f"  ├─ TFVN           : {tc.tfvn}")
-    bypass_str = 'Expedited / Type B' if tc.bypass == 1 else 'Seq-Controlled / Type A'
-    print(f"  ├─ Bypass Flag    : {tc.bypass} ({bypass_str})")
-    print(f"  ├─ Control Flag   : {tc.control} ({'Control Command' if tc.control == 1 else 'Data Frame'})")
-    print(f"  ├─ SCID           : {tc.scid} (0x{tc.scid:03X})")
-    print(f"  ├─ VCID           : {tc.vcid}")
-    print(f"  ├─ Frame Seq Num  : {tc.seq_num}")
-    print(f"  ├─ Total Length   : {len(tc_bytes)} bytes")
-    print(f"  └─ FECF (CRC16)   : 0x{tc_bytes[-2:].hex().upper()}")
+    if tc is not None:
+        print("\n[2] TC Transfer Frame Header (CCSDS 232.0-B-3)")
+        print(f"  ├─ TFVN           : {tc.tfvn}")
+        bypass_str = 'Expedited / Type B' if tc.bypass == 1 else 'Seq-Controlled / Type A'
+        print(f"  ├─ Bypass Flag    : {tc.bypass} ({bypass_str})")
+        print(f"  ├─ Control Flag   : {tc.control} ({'Control Command' if tc.control == 1 else 'Data Frame'})")
+        print(f"  ├─ SCID           : {tc.scid} (0x{tc.scid:03X})")
+        print(f"  ├─ VCID           : {tc.vcid}")
+        print(f"  ├─ Frame Seq Num  : {tc.seq_num}")
+        print(f"  ├─ Total Length   : {len(tc_bytes)} bytes")
+        print(f"  └─ FECF (CRC16)   : 0x{tc_bytes[-2:].hex().upper()}")
 
     print("\n[3] Hex Stream Dump")
     print(f"  └─ Raw Hex: {tc_bytes.hex().upper()}")

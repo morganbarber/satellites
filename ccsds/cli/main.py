@@ -56,6 +56,7 @@ def parse_arguments(args=None):
     # Execution modes
     parser.add_argument("--dry-run", action="store_true", help="Inspect packet structure without transmitting")
     parser.add_argument("--test", action="store_true", help="Run internal unit test suite")
+    parser.add_argument("--sp-only", action="store_true", help="Transmit only the Space Packet, skipping the TC Transfer Frame wrapper")
 
     # Stateful Sequence Automation Options
     parser.add_argument(
@@ -238,7 +239,10 @@ def main(cli_args=None):
         sys.exit(1)
 
     # Display inspection report
-    print_frame_inspection(sp, tc, tc_bytes)
+    if args.sp_only:
+        print_frame_inspection(sp, None, sp_bytes)
+    else:
+        print_frame_inspection(sp, tc, tc_bytes)
 
     if args.dry_run:
         print("[*] Dry-run mode enabled. Skipping transmission.")
@@ -251,11 +255,12 @@ def main(cli_args=None):
 
     print(f"[*] Transmitting over {args.proto.upper()} to {args.target}:{args.port}...")
     try:
+        data_to_send = sp_bytes if args.sp_only else tc_bytes
         send_payload(
             target_host=args.target,
             target_port=args.port,
             protocol=args.proto,
-            data=tc_bytes,
+            data=data_to_send,
             timeout=args.timeout,
             listen_response=args.recv
         )
