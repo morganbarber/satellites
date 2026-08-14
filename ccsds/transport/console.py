@@ -100,11 +100,11 @@ class PersistentConsole:
 
     def send_raw(self, data: bytes) -> None:
         """Sends raw bytes to the connected stream."""
-        if self.afsk:
-            data = modulate_afsk(data)
-            
         if not self.is_connected:
             self.connect()
+            
+        if self.afsk:
+            data = modulate_afsk(data)
 
         try:
             if self.connection_type == "tcp" and self.socket:
@@ -115,34 +115,32 @@ class PersistentConsole:
         except Exception as exc:
             raise TransmissionError(f"Error transmitting data on console: {exc}") from exc
 
-    def read_raw(self, max_bytes: int = 4096, timeout: Optional[float] = None) -> bytes:
+    def read_raw(self, max_bytes: int = 65536, timeout: Optional[float] = None) -> bytes:
         """Reads raw bytes from stream up to max_bytes."""
         if not self.is_connected:
             self.connect()
 
         effective_timeout = timeout if timeout is not None else self.default_timeout
-        actual_max = 65536 if self.afsk else max_bytes
-        data = b""
 
         try:
             if self.connection_type == "tcp" and self.socket:
                 self.socket.settimeout(effective_timeout)
-                data = self.socket.recv(actual_max)
+                data = self.socket.recv(max_bytes)
             elif self.connection_type == "serial" and self.serial_conn:
                 old_timeout = self.serial_conn.timeout
                 self.serial_conn.timeout = effective_timeout
-                data = self.serial_conn.read(actual_max)
+                data = self.serial_conn.read(max_bytes)
                 self.serial_conn.timeout = old_timeout
+            else:
+                data = b""
+                
+            if data and self.afsk:
+                data = demodulate_afsk(data)
+            return data
         except socket.timeout:
-            pass
+            return b""
         except Exception as exc:
             raise TransmissionError(f"Error reading raw data from console: {exc}") from exc
-
-        if self.afsk and data:
-            data = demodulate_afsk(data)
-            return data[:max_bytes] if max_bytes < len(data) else data
-
-        return data
 
     def flush_input(self) -> bytes:
         """Flushes and returns all unread input buffer content non-blockingly."""

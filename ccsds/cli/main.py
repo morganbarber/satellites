@@ -24,10 +24,10 @@ def parse_arguments(args=None):
 
     parser.add_argument("-t", "--target", help="Target IP or hostname")
     parser.add_argument("-p", "--port", type=int, help="Target port")
-    parser.add_argument("--proto", choices=["tcp", "udp", "zmq"], default="udp", help="Transport protocol (default: udp)")
+    parser.add_argument("--proto", choices=["tcp", "udp"], default="udp", help="Transport protocol (default: udp)")
     parser.add_argument("--timeout", type=float, default=3.0, help="Socket timeout in seconds (default: 3.0)")
-    parser.add_argument("--recv", action="store_true", help="Listen for UDP/ZMQ response after transmission")
-    parser.add_argument("--afsk", action="store_true", help="Enable AFSK1200 modulation for physical radio link")
+    parser.add_argument("--recv", action="store_true", help="Listen for UDP response after transmission")
+    parser.add_argument("--afsk", action="store_true", help="Encode/Decode transmissions using AFSK1200 modulation")
 
     # Spacecraft & Channel IDs
     parser.add_argument("--scid", type=int, default=0, help="Spacecraft ID (10-bit: 0-1023), default: 0")
