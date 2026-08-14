@@ -12,6 +12,13 @@ from ccsds.transport.payload import (
     format_counter_payload,
     parse_response_payload,
 )
+from ccsds.transport.afsk import modulate_afsk, demodulate_afsk
+
+try:
+    import zmq
+    HAS_ZMQ = True
+except ImportError:
+    HAS_ZMQ = False
 
 
 class StatefulSession:
@@ -21,7 +28,7 @@ class StatefulSession:
     """
     def __init__(self, target_host: str, target_port: int, protocol: str = "udp",
                  scid: int = 0, vcid: int = 0, apid: int = 1,
-                 bypass: int = 0, seq_num: int = 0, timeout: float = 3.0):
+                 bypass: int = 0, seq_num: int = 0, timeout: float = 3.0, afsk: bool = False):
         self.target_host = target_host
         self.target_port = target_port
         self.protocol = protocol.lower()
@@ -31,11 +38,23 @@ class StatefulSession:
         self.bypass = bypass
         self.seq_num = seq_num
         self.timeout = timeout
-        self.socket: Optional[socket.socket] = None
+        self.afsk = afsk
+        self.socket = None
+        self.zmq_context = None
         self.pkt_seq_count = 0
 
     def connect(self):
         """Establishes network socket connection and flushes TCP banners if present."""
+        if self.protocol == "zmq":
+            if not HAS_ZMQ:
+                raise ValueError("PyZMQ is required for ZMQ protocol")
+            self.zmq_context = zmq.Context()
+            self.socket = self.zmq_context.socket(zmq.REQ)
+            self.socket.setsockopt(zmq.RCVTIMEO, int(self.timeout * 1000))
+            self.socket.setsockopt(zmq.SNDTIMEO, int(self.timeout * 1000))
+            self.socket.connect(f"tcp://{self.target_host}:{self.target_port}")
+            return
+
         sock_type = socket.SOCK_DGRAM if self.protocol == "udp" else socket.SOCK_STREAM
         self.socket = socket.socket(socket.AF_INET, sock_type)
         self.socket.settimeout(self.timeout)
@@ -66,9 +85,12 @@ class StatefulSession:
         if self.socket:
             try:
                 self.socket.close()
-            except OSError:
+            except Exception:
                 pass
             self.socket = None
+        if self.zmq_context:
+            self.zmq_context.term()
+            self.zmq_context = None
 
     def __enter__(self):
         self.connect()
@@ -98,15 +120,28 @@ class StatefulSession:
 
         tc_bytes = tc.pack()
 
+        if self.afsk:
+            tc_bytes = modulate_afsk(tc_bytes)
+
         if not self.socket:
             self.connect()
 
-        if self.protocol == "tcp":
-            self.socket.sendall(tc_bytes)
-            resp = self.socket.recv(4096)
-        else:
-            self.socket.sendto(tc_bytes, (self.target_host, self.target_port))
-            resp, _ = self.socket.recvfrom(4096)
+        resp = b""
+        try:
+            if self.protocol == "zmq":
+                self.socket.send(tc_bytes)
+                resp = self.socket.recv()
+            elif self.protocol == "tcp":
+                self.socket.sendall(tc_bytes)
+                resp = self.socket.recv(65536)
+            else:
+                self.socket.sendto(tc_bytes, (self.target_host, self.target_port))
+                resp, _ = self.socket.recvfrom(65536)
+        except Exception as e:
+            print(f"[-] Receive error: {e}")
+
+        if self.afsk and resp:
+            resp = demodulate_afsk(resp)
 
         return resp
 

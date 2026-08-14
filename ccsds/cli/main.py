@@ -24,9 +24,10 @@ def parse_arguments(args=None):
 
     parser.add_argument("-t", "--target", help="Target IP or hostname")
     parser.add_argument("-p", "--port", type=int, help="Target port")
-    parser.add_argument("--proto", choices=["tcp", "udp"], default="udp", help="Transport protocol (default: udp)")
+    parser.add_argument("--proto", choices=["tcp", "udp", "zmq"], default="udp", help="Transport protocol (default: udp)")
     parser.add_argument("--timeout", type=float, default=3.0, help="Socket timeout in seconds (default: 3.0)")
-    parser.add_argument("--recv", action="store_true", help="Listen for UDP response after transmission")
+    parser.add_argument("--recv", action="store_true", help="Listen for UDP/ZMQ response after transmission")
+    parser.add_argument("--afsk", action="store_true", help="Enable AFSK1200 modulation for physical radio link")
 
     # Spacecraft & Channel IDs
     parser.add_argument("--scid", type=int, default=0, help="Spacecraft ID (10-bit: 0-1023), default: 0")
@@ -114,7 +115,8 @@ def execute_console(args):
             serial_port=args.serial_port,
             baudrate=args.baudrate,
             connection_type=args.console_type,
-            default_timeout=args.timeout
+            default_timeout=args.timeout,
+            afsk=args.afsk
         )
         with console:
             if args.interrupt_boot:
@@ -164,7 +166,8 @@ def execute_auto_sequence(args):
         apid=args.apid,
         bypass=args.bypass,
         seq_num=args.seq_num,
-        timeout=args.timeout
+        timeout=args.timeout,
+        afsk=args.afsk
     ) as session:
         try:
             session.run_sequence(
@@ -264,7 +267,8 @@ def main(cli_args=None):
             protocol=args.proto,
             data=data_to_send,
             timeout=args.timeout,
-            listen_response=args.recv
+            listen_response=args.recv,
+            afsk=args.afsk
         )
     except TransmissionError:
         sys.exit(1)

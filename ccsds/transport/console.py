@@ -8,6 +8,7 @@ import time
 from typing import Optional, Pattern, Union
 
 from ccsds.exceptions import TransmissionError
+from ccsds.transport.afsk import modulate_afsk, demodulate_afsk
 
 try:
     import serial
@@ -25,13 +26,15 @@ class PersistentConsole:
 
     def __init__(self, target_host: str = "127.0.0.1", target_port: int = 23,
                  serial_port: Optional[str] = None, baudrate: int = 115200,
-                 connection_type: str = "tcp", default_timeout: float = 3.0):
+                 connection_type: str = "tcp", default_timeout: float = 3.0,
+                 afsk: bool = False):
         self.target_host = target_host
         self.target_port = target_port
         self.serial_port = serial_port
         self.baudrate = baudrate
         self.connection_type = connection_type.lower()
         self.default_timeout = default_timeout
+        self.afsk = afsk
 
         self.socket: Optional[socket.socket] = None
         self.serial_conn: Optional[object] = None
@@ -97,6 +100,9 @@ class PersistentConsole:
 
     def send_raw(self, data: bytes) -> None:
         """Sends raw bytes to the connected stream."""
+        if self.afsk:
+            data = modulate_afsk(data)
+            
         if not self.is_connected:
             self.connect()
 
@@ -115,22 +121,28 @@ class PersistentConsole:
             self.connect()
 
         effective_timeout = timeout if timeout is not None else self.default_timeout
+        actual_max = 65536 if self.afsk else max_bytes
+        data = b""
 
         try:
             if self.connection_type == "tcp" and self.socket:
                 self.socket.settimeout(effective_timeout)
-                return self.socket.recv(max_bytes)
+                data = self.socket.recv(actual_max)
             elif self.connection_type == "serial" and self.serial_conn:
                 old_timeout = self.serial_conn.timeout
                 self.serial_conn.timeout = effective_timeout
-                data = self.serial_conn.read(max_bytes)
+                data = self.serial_conn.read(actual_max)
                 self.serial_conn.timeout = old_timeout
-                return data
-            return b""
         except socket.timeout:
-            return b""
+            pass
         except Exception as exc:
             raise TransmissionError(f"Error reading raw data from console: {exc}") from exc
+
+        if self.afsk and data:
+            data = demodulate_afsk(data)
+            return data[:max_bytes] if max_bytes < len(data) else data
+
+        return data
 
     def flush_input(self) -> bytes:
         """Flushes and returns all unread input buffer content non-blockingly."""
