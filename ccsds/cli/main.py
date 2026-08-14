@@ -32,6 +32,7 @@ def parse_arguments(args=None):
     parser.add_argument("--scid", type=int, default=0, help="Spacecraft ID (10-bit: 0-1023), default: 0")
     parser.add_argument("--vcid", type=int, default=0, help="Virtual Channel ID (6-bit: 0-63), default: 0")
     parser.add_argument("--apid", type=int, default=1, help="Application Process ID (11-bit: 0-2047), default: 1")
+    parser.add_argument("--packet-type", type=int, choices=[0, 1], default=1, help="Space Packet Type: 0=Telemetry, 1=Telecommand (default)")
 
     # CCSDS Header Flags
     parser.add_argument(
@@ -221,6 +222,7 @@ def main(cli_args=None):
         sp = SpacePacket(
             apid=args.apid,
             payload=user_data,
+            packet_type=args.packet_type,
             sec_header_flag=args.sec_header,
             seq_flags=args.seq_flags
         )
